@@ -1094,184 +1094,185 @@ export default function Home() {
 	};
 
 	const handleImageUpload = async (file: File) => {
-		if (!file || !file.type.startsWith("image/")) {
-			alert("Please select a valid image file");
+		if (!file || (!file.type.startsWith("image/") && file.type !== "application/pdf")) {
+			alert("Please select a valid image or PDF file");
 			return;
 		}
 
-		const reader = new FileReader();
+		// Import PDF processing utilities
+		const { isPdfFile, convertPdfToImages } = await import("../utils/pdf-processor");
 
-		reader.onerror = () => {
-			setIsProcessing(false);
+		let imageData: string;
+
+		if (isPdfFile(file)) {
+			// Handle PDF file
+			const images = await convertPdfToImages(file);
+			if (images.length === 0) {
+				throw new Error("No pages found in PDF");
+			}
+			// Use the first page for now (could be extended to handle multiple pages)
+			imageData = images[0];
+		} else {
+			// Handle image file
+			const reader = new FileReader();
+			imageData = await new Promise<string>((resolve, reject) => {
+				reader.onload = (e) => {
+					const result = e.target?.result as string;
+					if (!result) {
+						reject(new Error("Failed to load image data"));
+					} else {
+						resolve(result);
+					}
+				};
+				reader.onerror = () => reject(new Error("Failed to read file"));
+				reader.readAsDataURL(file);
+			});
+		}
+
+		setUploadedImage(imageData);
+		setIsProcessing(true);
+		setProcessingStages([]);
+		setRawOCRText("");
+		setPreprocessedImage(null);
+		setFormTypeInfo(null);
+
+		try {
+			const stages: IStage[] = [];
+
+			// Stage 1: Preprocessing
+			stages.push({
+				name: "Preprocessing",
+				status: "processing",
+				description: "Applying advanced image enhancement...",
+			});
+			setProcessingStages([...stages]);
+
+			const preprocessed = await preprocessImage(imageData);
+			setPreprocessedImage(preprocessed);
+
+			stages[0] = {
+				name: "Preprocessing",
+				status: "complete",
+				description:
+					"Applied contrast enhancement, Otsu thresholding, despeckling, and morphological operations",
+			};
+			setProcessingStages([...stages]);
+
+			// Stage 2: Spatial OCR with TSV
+			stages.push({
+				name: "Spatial OCR Analysis",
+				status: "processing",
+				description:
+					"Running Tesseract with spatial information (TSV mode)...",
+			});
+			setProcessingStages([...stages]);
+
+				const {
+				labels: spatialLabels,
+				fieldPairs,
+				rawTSV,
+			} = await extractLabelsWithSpatialAnalysis(preprocessed);
+
+			stages[1] = {
+				name: "Spatial OCR Analysis",
+				status: "complete",
+				description: `Extracted ${spatialLabels.length} labels with spatial coordinates`,
+			};
+			setProcessingStages([...stages]);
+
+			// Stage 3: Form Type Detection
+			stages.push({
+				name: "Form Type Detection",
+				status: "processing",
+				description: "Analyzing form structure and type...",
+			});
+			setProcessingStages([...stages]);
+
+			const ocrText = spatialLabels.join("\n");
+			const {
+				type: detectedType,
+				config: formConfig,
+				confidence: typeConfidence,
+			} = detectFormType(ocrText);
+
+			stages[2] = {
+				name: "Form Type Detection",
+				status: "complete",
+				description: `Detected: ${
+					formConfig.name
+				} (${typeConfidence.toFixed(0)}% confidence)`,
+			};
+			setProcessingStages([...stages]);
+
+			// Stage 4: Confidence Scoring with Spatial Data
+			stages.push({
+				name: "Confidence Scoring",
+				status: "processing",
+				description:
+					"Applying confidence scoring based on spatial analysis...",
+			});
+			setProcessingStages([...stages]);
+
+			const scores = new Map<string, number>();
+			fieldPairs.forEach((fieldData, label) => {
+				let score = fieldData.confidence;
+
+				// Boost confidence for labels with detected input areas
+				score += 30;
+
+				if (
+					formConfig.keywords.some((kw) =>
+						new RegExp(`\\b${kw}\\b`, "i").test(label)
+					)
+				) {
+					score += formConfig.confidence_boost;
+				}
+				if (label.includes(":")) score += 10;
+				if (label.length > 10 && label.length < 80) score += 5;
+				if (/^[A-Z]/.test(label)) score += 5;
+
+				scores.set(label, Math.min(100, score));
+			});
+			setConfidenceScores(scores);
+
+				stages[3] = {
+				name: "Confidence Scoring",
+				status: "complete",
+				description: `Confidence scoring completed for ${spatialLabels.length} labels`,
+			};
+			setProcessingStages([...stages]);
+
+			setExtractedLabels(spatialLabels);
+			setRawOCRText(ocrText);
+			setFormTypeInfo({
+				type: detectedType,
+				config: formConfig,
+				typeConfidence,
+				metadata: { detectedSections: [], fieldGroups: {} },
+			});
+		} catch (error) {
+			console.error("Error in OCR pipeline:", error);
+			setExtractedLabels([]);
 			setProcessingStages([
 				{
 					name: "Error",
 					status: "failed",
-					description: "Failed to read file",
+					description: `Pipeline failed: ${
+						error instanceof Error
+							? error.message
+							: "Unknown error"
+					}`,
 				},
 			]);
-		};
-
-		reader.onload = async (e) => {
-			const imageData = e.target?.result as string;
-			if (!imageData) {
-				setIsProcessing(false);
-				setProcessingStages([
-					{
-						name: "Error",
-						status: "failed",
-						description: "Failed to load image data",
-					},
-				]);
-				return;
-			}
-
-			setUploadedImage(imageData);
-			setIsProcessing(true);
-			setProcessingStages([]);
-			setRawOCRText("");
-			setPreprocessedImage(null);
-			setFormTypeInfo(null);
-
-			try {
-				const stages: IStage[] = [];
-
-				// Stage 1: Preprocessing
-				stages.push({
-					name: "Preprocessing",
-					status: "processing",
-					description: "Applying advanced image enhancement...",
-				});
-				setProcessingStages([...stages]);
-
-				const preprocessed = await preprocessImage(imageData);
-				setPreprocessedImage(preprocessed);
-
-				stages[0] = {
-					name: "Preprocessing",
-					status: "complete",
-					description:
-						"Applied contrast enhancement, Otsu thresholding, despeckling, and morphological operations",
-				};
-				setProcessingStages([...stages]);
-
-				// Stage 2: Spatial OCR with TSV
-				stages.push({
-					name: "Spatial OCR Analysis",
-					status: "processing",
-					description:
-						"Running Tesseract with spatial information (TSV mode)...",
-				});
-				setProcessingStages([...stages]);
-
-				const {
-					labels: spatialLabels,
-					fieldPairs,
-					rawTSV,
-				} = await extractLabelsWithSpatialAnalysis(preprocessed);
-
-				stages[1] = {
-					name: "Spatial OCR Analysis",
-					status: "complete",
-					description: `Extracted ${spatialLabels.length} labels with spatial coordinates`,
-				};
-				setProcessingStages([...stages]);
-
-				// Stage 3: Form Type Detection
-				stages.push({
-					name: "Form Type Detection",
-					status: "processing",
-					description: "Analyzing form structure and type...",
-				});
-				setProcessingStages([...stages]);
-
-				const ocrText = spatialLabels.join("\n");
-				const {
-					type: detectedType,
-					config: formConfig,
-					confidence: typeConfidence,
-				} = detectFormType(ocrText);
-
-				stages[2] = {
-					name: "Form Type Detection",
-					status: "complete",
-					description: `Detected: ${
-						formConfig.name
-					} (${typeConfidence.toFixed(0)}% confidence)`,
-				};
-				setProcessingStages([...stages]);
-
-				// Stage 4: Confidence Scoring with Spatial Data
-				stages.push({
-					name: "Confidence Scoring",
-					status: "processing",
-					description:
-						"Applying confidence scoring based on spatial analysis...",
-				});
-				setProcessingStages([...stages]);
-
-				const scores = new Map<string, number>();
-				fieldPairs.forEach((fieldData, label) => {
-					let score = fieldData.confidence;
-
-					// Boost confidence for labels with detected input areas
-					score += 30;
-
-					if (
-						formConfig.keywords.some((kw) =>
-							new RegExp(`\\b${kw}\\b`, "i").test(label)
-						)
-					) {
-						score += formConfig.confidence_boost;
-					}
-					if (label.includes(":")) score += 10;
-					if (label.length > 10 && label.length < 80) score += 5;
-					if (/^[A-Z]/.test(label)) score += 5;
-
-					scores.set(label, Math.min(100, score));
-				});
-				setConfidenceScores(scores);
-
-				stages[3] = {
-					name: "Confidence Scoring",
-					status: "complete",
-					description: `Confidence scoring completed for ${spatialLabels.length} labels`,
-				};
-				setProcessingStages([...stages]);
-
-				setExtractedLabels(spatialLabels);
-				setRawOCRText(ocrText);
-				setFormTypeInfo({
-					type: detectedType,
-					config: formConfig,
-					typeConfidence,
-					metadata: { detectedSections: [], fieldGroups: {} },
-				});
-			} catch (error) {
-				console.error("Error in OCR pipeline:", error);
-				setExtractedLabels([]);
-				setProcessingStages([
-					{
-						name: "Error",
-						status: "failed",
-						description: `Pipeline failed: ${
-							error instanceof Error
-								? error.message
-								: "Unknown error"
-						}`,
-					},
-				]);
-			} finally {
-				setIsProcessing(false);
-			}
-		};
-		reader.readAsDataURL(file);
+		} finally {
+			setIsProcessing(false);
+		}
 	};
 
 	const handleDrop = (e: React.DragEvent) => {
 		e.preventDefault();
 		const file = e.dataTransfer.files[0];
-		if (file && file.type.startsWith("image/")) {
+		if (file && (file.type.startsWith("image/") || file.type === "application/pdf")) {
 			handleImageUpload(file);
 		}
 	};
@@ -1345,14 +1346,14 @@ export default function Home() {
 						>
 							<Upload className="w-12 h-12 mx-auto mb-4 text-slate-400" />
 							<h3 className="text-xl font-semibold text-white mb-2">
-								Upload Form Image
+								Upload Form Document
 							</h3>
 							<p className="text-slate-400 mb-4">
-								Drag & drop or click to select
+								Supports PDF files and images (PNG, JPG, etc.)
 							</p>
 							<input
 								type="file"
-								accept="image/*"
+								accept="image/*,.pdf"
 								onChange={(e) =>
 									e.target.files?.[0] &&
 									handleImageUpload(e.target.files[0])
