@@ -355,20 +355,54 @@ export default function Home() {
 
 			if (line.length < 2 || line.length > 200) continue;
 
-			// Apply OCR error corrections
+			// Apply OCR error corrections - Enhanced for form characters
 			line = line
+				// Fix common character confusions
 				.replace(/[|]/g, "I")
 				.replace(/[0O]/g, (match, offset) => {
 					const nextChar = line[offset + 1];
-					return /[a-zA-Z]/.test(nextChar) ? "O" : match;
+					const prevChar = line[offset - 1];
+					// Better context for O vs 0
+					if (/[a-zA-Z]/.test(nextChar) || /[a-zA-Z]/.test(prevChar)) return "O";
+					if (/[0-9]/.test(nextChar) || /[0-9]/.test(prevChar)) return "0";
+					return match;
 				})
 				.replace(/[1l]/g, (match, offset) => {
 					const prevChar = line[offset - 1];
 					const nextChar = line[offset + 1];
-					if (/[a-zA-Z]/.test(prevChar) || /[a-zA-Z]/.test(nextChar))
-						return "l";
+					if (/[a-zA-Z]/.test(prevChar) || /[a-zA-Z]/.test(nextChar)) return "l";
+					if (/[0-9]/.test(prevChar) || /[0-9]/.test(nextChar)) return "1";
 					return match;
-				});
+				})
+				// Fix bracket and parenthesis recognition
+				.replace(/\(/g, "(")
+				.replace(/\)/g, ")")
+				.replace(/\[/g, "[")
+				.replace(/\]/g, "]")
+				.replace(/\{/g, "{")
+				.replace(/\}/g, "}")
+				// Fix colon recognition (common OCR error)
+				.replace(/[.;,]/g, (match) => {
+					// Check if this should be a colon based on context
+					const beforeMatch = line.substring(0, line.indexOf(match));
+					const afterMatch = line.substring(line.indexOf(match) + 1);
+					
+					// If it's at the end of a label word, likely should be colon
+					if (beforeMatch.trim().split(/\s+/).pop()?.length > 0 && 
+						afterMatch.trim().length === 0) {
+						return ":";
+					}
+					return match;
+				})
+				// Fix common form field pattern misrecognitions
+				.replace(/\[\s*\]/g, "[ ]")
+				.replace(/\(\s*\)/g, "( )")
+				.replace(/\s+:\s+/g, ": ")
+				.replace(/\s*:\s*$/, ":")
+				// Fix dot patterns in forms
+				.replace(/\.{3,}/g, "...")
+				.replace(/\s+\.\s+/g, ". ")
+				.replace(/\s+\.$/, ".");
 
 			if (/^\d+[\d/\-:.]*$/.test(line)) continue;
 
@@ -476,8 +510,13 @@ export default function Home() {
 		}
 
 		const range = max - min || 1;
+		// Apply more gentle contrast enhancement to preserve form structures
+		const contrastFactor = 1.5; // Reduced from full enhancement
+		
 		for (let i = 0; i < data.length; i += 4) {
-			const enhanced = ((data[i] - min) / range) * 255;
+			const normalized = (data[i] - min) / range;
+			// Apply sigmoid-like contrast enhancement for better form preservation
+			const enhanced = 255 / (1 + Math.exp(-10 * (normalized - 0.5) * contrastFactor));
 			data[i] = enhanced;
 			data[i + 1] = enhanced;
 			data[i + 2] = enhanced;
@@ -540,6 +579,40 @@ export default function Home() {
 		}
 	};
 
+	// Post-processing function for final character correction and form pattern enhancement
+	const postProcessOCRResults = (labels: string[]): string[] => {
+		return labels.map(label => {
+			let processedLabel = label;
+			
+			// Fix common form-specific OCR errors
+			processedLabel = processedLabel
+				// Fix colons that were misrecognized as other punctuation
+				.replace(/([a-zA-Z0-9])\s*[.;,]\s*$/g, '$1:')
+				// Fix brackets that were misrecognized
+				.replace(/\[\s*\]/g, '[ ]')
+				.replace(/\(\s*\)/g, '( )')
+				// Fix multiple spaces
+				.replace(/\s{2,}/g, ' ')
+				// Fix common character confusions in form context
+				.replace(/(\w)0/g, '$1O') // O after letter
+				.replace(/0(\w)/g, 'O$1') // O before letter
+				.replace(/(\w)1/g, '$1l') // l after letter
+				.replace(/1(\w)/g, 'l$1') // l before letter
+				// Fix form field indicators
+				.replace(/\.{2,}/g, '...')
+				.replace(/[:\s]*\.{3,}/g, ':...')
+				// Clean up trailing/leading spaces
+				.trim();
+			
+			// Validate that the label still looks like a form field
+			if (processedLabel.length < 2 || processedLabel.length > 200) {
+				return label; // Revert if processing made it invalid
+			}
+			
+			return processedLabel;
+		});
+	};
+
 	const preprocessImage = (imageData: string): Promise<string> => {
 		return new Promise((resolve, reject) => {
 			if (!imageData) {
@@ -568,9 +641,9 @@ export default function Home() {
 
 					const canvas = document.createElement("canvas");
 					const scaleFactor = Math.min(
-						2000 / img.width,
-						2000 / img.height,
-						2
+						3000 / img.width,  // Increased resolution for better OCR
+						3000 / img.height,
+						3  // Increased scale factor for forms
 					);
 					canvas.width = img.width * scaleFactor;
 					canvas.height = img.height * scaleFactor;
@@ -779,18 +852,52 @@ export default function Home() {
 			if (line.length < 2 || line.length > 200) continue;
 
 			line = line
+				// Fix common character confusions
 				.replace(/[|]/g, "I")
 				.replace(/[0O]/g, (match, offset) => {
 					const nextChar = line[offset + 1];
-					return /[a-zA-Z]/.test(nextChar) ? "O" : match;
+					const prevChar = line[offset - 1];
+					// Better context for O vs 0
+					if (/[a-zA-Z]/.test(nextChar) || /[a-zA-Z]/.test(prevChar)) return "O";
+					if (/[0-9]/.test(nextChar) || /[0-9]/.test(prevChar)) return "0";
+					return match;
 				})
 				.replace(/[1l]/g, (match, offset) => {
 					const prevChar = line[offset - 1];
 					const nextChar = line[offset + 1];
-					if (/[a-zA-Z]/.test(prevChar) || /[a-zA-Z]/.test(nextChar))
-						return "l";
+					if (/[a-zA-Z]/.test(prevChar) || /[a-zA-Z]/.test(nextChar)) return "l";
+					if (/[0-9]/.test(prevChar) || /[0-9]/.test(nextChar)) return "1";
 					return match;
-				});
+				})
+				// Fix bracket and parenthesis recognition
+				.replace(/\(/g, "(")
+				.replace(/\)/g, ")")
+				.replace(/\[/g, "[")
+				.replace(/\]/g, "]")
+				.replace(/\{/g, "{")
+				.replace(/\}/g, "}")
+				// Fix colon recognition (common OCR error)
+				.replace(/[.;,]/g, (match) => {
+					// Check if this should be a colon based on context
+					const beforeMatch = line.substring(0, line.indexOf(match));
+					const afterMatch = line.substring(line.indexOf(match) + 1);
+					
+					// If it's at the end of a label word, likely should be colon
+					if (beforeMatch.trim().split(/\s+/).pop()?.length > 0 && 
+						afterMatch.trim().length === 0) {
+						return ":";
+					}
+					return match;
+				})
+				// Fix common form field pattern misrecognitions
+				.replace(/\[\s*\]/g, "[ ]")
+				.replace(/\(\s*\)/g, "( )")
+				.replace(/\s+:\s+/g, ": ")
+				.replace(/\s*:\s*$/, ":")
+				// Fix dot patterns in forms
+				.replace(/\.{3,}/g, "...")
+				.replace(/\s+\.\s+/g, ". ")
+				.replace(/\s+\.$/, ".");
 
 			if (/^\d+[\d/\-:.]*$/.test(line)) continue;
 
@@ -1242,7 +1349,9 @@ export default function Home() {
 			};
 			setProcessingStages([...stages]);
 
-			setExtractedLabels(spatialLabels);
+			// Apply post-processing to improve accuracy
+			const processedLabels = postProcessOCRResults(spatialLabels);
+			setExtractedLabels(processedLabels);
 			setRawOCRText(ocrText);
 			setFormTypeInfo({
 				type: detectedType,
